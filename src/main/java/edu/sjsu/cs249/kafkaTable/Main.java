@@ -144,6 +144,16 @@ public class Main {
         }
         return 0;
     }
+
+    @Command
+    int replica(@Parameters(paramLabel = "kafkaHost:port") String server,
+                @Parameters(paramLabel = "name") String name,
+                @Parameters(paramLabel = "port") int port,
+                @Parameters(paramLabel = "snapshotCycle") int snapshotCycle,
+                @Parameters(paramLabel = "topicPrefix") String topicPrefix) throws IOException, InterruptedException {
+        new KafkaTableInstance(server, name, port, snapshotCycle, topicPrefix).start();
+        return 0;
+    }
     public static void main(String[] args) {
         System.exit(new CommandLine(new Main()).execute(args));
     }
