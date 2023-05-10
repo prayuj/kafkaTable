@@ -42,7 +42,7 @@ import java.util.stream.Collectors;
 public class Main {
     static {
         // quiet some kafka messages
-        //System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "warn");
+        System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "warn");
     }
 
     @Command
@@ -65,11 +65,14 @@ public class Main {
     }
 
     @Command
-    int consume(@Parameters(paramLabel = "topic-name") String name,
-                @Parameters(paramLabel = "group-id") String id)
-            throws InvalidProtocolBufferException, InterruptedException {
+    int consume(@Parameters(paramLabel = "kafkaHost:port") String server,
+                @Parameters(paramLabel = "topic-name") String name,
+                @Parameters(paramLabel = "group-id") String id) throws InvalidProtocolBufferException, InterruptedException {
         var properties = new Properties();
+        properties.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, server);
+        properties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         properties.setProperty(ConsumerConfig.GROUP_ID_CONFIG, id);
+        properties.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
         properties.setProperty(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, "10000");
         var consumer = new KafkaConsumer<>(properties, new StringDeserializer(), new ByteArrayDeserializer());
         System.out.println("Starting at " + new Date());
@@ -98,8 +101,19 @@ public class Main {
                 System.out.println(record.timestamp());
                 System.out.println(record.timestampType());
                 System.out.println(record.offset());
-                var message = SimpleMessage.parseFrom(record.value());
-                System.out.println(message);
+                if (name.contains("operations")) {
+                    var message = PublishedItem.parseFrom(record.value());
+                    System.out.println(message);
+                } else if (name.contains("snapshotOrdering")) {
+                    var message = SnapshotOrdering.parseFrom(record.value());
+                    System.out.println(message);
+                } else if (name.contains("snapshot")) {
+                    var message = Snapshot.parseFrom(record.value());
+                    System.out.println(message);
+                } else {
+                    var message = SimpleMessage.parseFrom(record.value());
+                    System.out.println(message);
+                }
             }
         }
     }
@@ -188,7 +202,8 @@ public class Main {
             @Parameters(paramLabel = "clientId") String id,
             @Option(names = "--repeat") boolean repeat,
             @Option(names = "--concurrent") boolean concurrent,
-            @Parameters(paramLabel = "grpcHost:port", arity = "1..*") String[] servers) {
+            @Parameters(paramLabel = "grpclear" +
+                    "cHost:port", arity = "1..*") String[] servers) {
         int count = repeat ? 2 : 1;
         var clientXid = ClientXid.newBuilder().setClientid(id).setCounter((int)(System.currentTimeMillis()/1000)).build();
         System.out.println(clientXid);
