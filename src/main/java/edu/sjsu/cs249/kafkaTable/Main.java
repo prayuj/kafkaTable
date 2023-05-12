@@ -299,24 +299,6 @@ public class Main {
         Snapshot snapshot = response.getSnapshot();
         lastClientCounter = snapshot.getClientCountersOrDefault(id, -1);
 
-        if (snapshot.getTableMap().containsKey(TESTING_KEY) && snapshot.getTableMap().get(TESTING_KEY) > 0) {
-            System.out.println("RESETTING " + TESTING_KEY);
-            KafkaTableGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex]))
-                    .inc(IncRequest.newBuilder()
-                            .setKey(TESTING_KEY)
-                            .setIncValue(-snapshot.getTableMap().get(TESTING_KEY))
-                            .setXid(ClientXid.newBuilder()
-                                    .setClientid(id)
-                                    .setCounter(++lastClientCounter).build()).build());
-            Thread.sleep(1000);
-            response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
-            snapshot = response.getSnapshot();
-            if (snapshot.getTableMap().containsKey(TESTING_KEY) && snapshot.getTableMap().get(TESTING_KEY) > 0) {
-                System.out.println("RESETTING `"+ TESTING_KEY +"` DID NOT WORK FOR " + servers[serverIndex]);
-                return -1;
-            }
-        }
-
         // do the same 20 puts to all the replicas (duplicates)
         for (int i = 0; i < INCREMENTS; i++) {
             int counter = ++lastClientCounter;
