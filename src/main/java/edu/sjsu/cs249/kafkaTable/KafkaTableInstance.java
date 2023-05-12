@@ -128,6 +128,7 @@ public class KafkaTableInstance {
                     clientCounters.put(key, message.getClientCountersMap().get(key));
                 }
                 snapshotOrderingOffset = message.getSnapshotOrderingOffset();
+                addLog("Snapshot consumed: " + message);
             } catch (InvalidProtocolBufferException e) {
                 addLog("Unable to parse value: " + e);
             }
