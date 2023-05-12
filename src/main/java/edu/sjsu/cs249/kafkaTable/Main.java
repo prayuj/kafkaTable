@@ -3,6 +3,7 @@ package edu.sjsu.cs249.kafkaTable;
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.stub.StreamObserver;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -26,8 +27,11 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 @Command
@@ -262,20 +266,12 @@ public class Main {
             Thread.sleep(1000);
 
             // do gets to all the replicas to make sure that they have seen the puts
-            for(String getReqServer: servers) {
-                int value = KafkaTableGrpc.newBlockingStub(channelHashMap.get(getReqServer))
-                        .get(GetRequest.newBuilder()
-                                .setKey(TESTING_KEY)
-                                .setXid(ClientXid.newBuilder()
-                                        .setClientid(id)
-                                        .setCounter(++lastClientCounter).build()).build()).getValue();
-                if (value != currVal) {
-                    System.out.println("get for " + TESTING_KEY + " for " + getReqServer + " is incorrect");
-                    System.out.println("returned: " + value + "; expected: " + currVal);
-                    return -1;
-                }
-            }
-            System.out.println("GET VERIFIED FOR ALL SERVERS");
+
+            if (verifyGet(servers, channelHashMap, TESTING_KEY, id, lastClientCounter, currVal) == -1) return -1;
+
+            response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
+            snapshot = response.getSnapshot();
+            lastClientCounter = snapshot.getClientCountersOrDefault(id, -1);
 
             Thread.sleep(1000);
             if (verifyingSnapshots(servers, channelHashMap, TESTING_KEY, id) == -1) return -1;
@@ -302,16 +298,33 @@ public class Main {
         // do the same 20 puts to all the replicas (duplicates)
         for (int i = 0; i < INCREMENTS; i++) {
             int counter = ++lastClientCounter;
+            CountDownLatch countDownLatch = new CountDownLatch(servers.length);
             for (String server : servers) {
-                KafkaTableGrpc.newBlockingStub(channelHashMap.get(server))
+                KafkaTableGrpc.newStub(channelHashMap.get(server))
                         .inc(IncRequest.newBuilder()
                                 .setKey(TESTING_KEY)
                                 .setIncValue(TESTING_INCREMENT)
                                 .setXid(ClientXid.newBuilder()
                                         .setClientid(id)
                                         .setCounter(counter)
-                                        .build()).build());
+                                        .build()).build(), new StreamObserver<IncResponse>() {
+                            @Override
+                            public void onNext(IncResponse incResponse) {
+
+                            }
+
+                            @Override
+                            public void onError(Throwable throwable) {
+
+                            }
+
+                            @Override
+                            public void onCompleted() {
+                                countDownLatch.countDown();
+                            }
+                        });
             }
+            countDownLatch.await();
             System.out.println(i+1 + "/" + INCREMENTS + " INCREMENTS DONE");
         }
 
@@ -319,6 +332,92 @@ public class Main {
         Thread.sleep(1000);
 
         // do gets to all the replicas to make sure that they applied the puts only applied once
+
+        if (verifyGet(servers, channelHashMap, TESTING_KEY, id, lastClientCounter, 20) == -1) return -1;
+
+        Thread.sleep(1000);
+        if (verifyingSnapshots(servers, channelHashMap, TESTING_KEY, id) == -1) return -1;
+        System.out.println("ALL TESTS PASSED! CHECK SNAPSHOTS FOR SYNC");
+        return 0;
+    }
+
+    @Command
+    int recoverTests(@Parameters(paramLabel = "clientId") String id,
+                     @Parameters(paramLabel = "init index to debug") int serverIndex,
+                     @Parameters(paramLabel = "grpclear" + "cHost:port", arity = "1..*") String [] servers) throws InterruptedException {
+        String TESTING_KEY = "testing_key";
+        int TESTING_INCREMENT = 1;
+        AtomicInteger lastClientCounter = new AtomicInteger();
+        AtomicBoolean isRunning = new AtomicBoolean(true);
+
+        HashMap<String, ManagedChannel> channelHashMap = getChannelsAndRest(servers, serverIndex, id, TESTING_KEY);
+        var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex]));
+        KafkaTableDebugResponse response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
+        Snapshot snapshot = response.getSnapshot();
+        lastClientCounter.set(snapshot.getClientCountersOrDefault(id, -1));
+
+        AtomicInteger requestCount = new AtomicInteger(0);
+
+        Thread incrementThread = new Thread(() -> {
+            System.out.println("STARTED REQUESTS");
+            while (isRunning.get()) {
+                for(String server: servers) {
+                    if (isRunning.get()) {
+                        try {
+                            KafkaTableGrpc.newBlockingStub(channelHashMap.get(server))
+                                    .inc(IncRequest.newBuilder()
+                                            .setKey(TESTING_KEY)
+                                            .setIncValue(TESTING_INCREMENT)
+                                            .setXid(ClientXid.newBuilder()
+                                                    .setClientid(id)
+                                                    .setCounter(lastClientCounter.incrementAndGet())
+                                                    .build()).build());
+
+                            int curr = requestCount.incrementAndGet();
+                        } catch (Exception e) {
+                            System.out.println(e);
+                        }
+                    }
+                }
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        });
+        incrementThread.start();
+
+        Scanner scanner = new Scanner(System.in);
+
+        while (true) {
+            String str = scanner.next();
+            if (Objects.equals(str, "exit")) {
+                isRunning.set(false);
+                Thread.sleep(1000);
+                if (verifyGet(servers, channelHashMap, TESTING_KEY, id, lastClientCounter.incrementAndGet(), requestCount.get()) == -1) return -1;
+                Thread.sleep(1000);
+                verifyingSnapshots(servers, channelHashMap, TESTING_KEY, id);
+                break;
+            } else if (Objects.equals(str, "status")) {
+                System.out.println(requestCount.get() + " REQUESTS DONE");
+            } else if (str.matches("172\\.27\\.24\\.[0-9]+:[0-9]+")) {
+                try {
+                    KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(str))
+                            .exit(ExitRequest.newBuilder().build());
+                    System.out.println(str + " EXITED");
+                } catch (Exception e) {
+                    System.out.println("EXIT EXCEPTION " + e);
+                }
+            }
+            Thread.sleep(100);
+        }
+
+        return 0;
+    }
+
+
+    private int verifyGet(String[] servers, HashMap<String, ManagedChannel> channelHashMap, String TESTING_KEY, String id, int lastClientCounter, int expectedValue) {
         for(String server: servers) {
             int value = KafkaTableGrpc.newBlockingStub(channelHashMap.get(server))
                     .get(GetRequest.newBuilder()
@@ -326,19 +425,15 @@ public class Main {
                             .setXid(ClientXid.newBuilder()
                                     .setClientid(id)
                                     .setCounter(++lastClientCounter).build()).build()).getValue();
-            if (value != 20) {
+            if (value != expectedValue) {
                 System.out.println("get for " + TESTING_KEY + " for " + server + " is incorrect");
-                System.out.println("returned: " + value + "; expected: " + 20);
+                System.out.println("returned: " + value + "; expected: " + expectedValue);
                 return -1;
             }
         }
         System.out.println("GET VERIFIED FOR ALL SERVERS");
-        Thread.sleep(1000);
-        if (verifyingSnapshots(servers, channelHashMap, TESTING_KEY, id) == -1) return -1;
-        System.out.println("ALL TESTS PASSED! CHECK SNAPSHOTS FOR SYNC");
-        return 0;
+        return 1;
     }
-
     private int verifyingSnapshots(String[] servers, HashMap<String, ManagedChannel>  channelHashMap, String TESTING_KEY, String id) {
         ArrayList<Snapshot> snapshots = new ArrayList<>();
         for(String debugReqServer: servers) {
