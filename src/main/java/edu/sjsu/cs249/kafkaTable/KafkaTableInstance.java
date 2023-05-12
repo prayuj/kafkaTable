@@ -334,8 +334,8 @@ class KafkaTableGrpcService extends KafkaTableGrpc.KafkaTableImplBase {
     @Override
     public void inc(IncRequest request, StreamObserver<IncResponse> responseObserver) {
         synchronized (kt) {
+            kt.addLog("Inc GRPC called");
             // If the request has already been seen ignore it
-
             if(!kt.isValidRequest(request.getXid().getClientid(), request.getXid().getCounter())){
                 kt.addLog("Duplicate Request, ...ignoring");
                 responseObserver.onNext(IncResponse.newBuilder().build());
@@ -353,6 +353,7 @@ class KafkaTableGrpcService extends KafkaTableGrpc.KafkaTableImplBase {
     @Override
     public void get(GetRequest request, StreamObserver<GetResponse> responseObserver) {
         synchronized (kt) {
+            kt.addLog("Get GRPC called");
             // If the request has already been seen ignore it
             if (!kt.isValidRequest(request.getXid().getClientid(), request.getXid().getCounter())) {
                 kt.addLog("Duplicate Request, ...ignoring");
@@ -379,6 +380,7 @@ class KafkaTableDebugGrpcService extends KafkaTableDebugGrpc.KafkaTableDebugImpl
     @Override
     public void debug(KafkaTableDebugRequest request, StreamObserver<KafkaTableDebugResponse> responseObserver) {
         synchronized (kt) {
+            kt.addLog("Debug GRPC called");
             Snapshot snapshot = Snapshot.newBuilder()
                     .setReplicaId(kt.name)
                     .putAllTable(kt.hashtable)
@@ -394,6 +396,7 @@ class KafkaTableDebugGrpcService extends KafkaTableDebugGrpc.KafkaTableDebugImpl
 
     @Override
     public void exit(ExitRequest request, StreamObserver<ExitResponse> responseObserver) {
+        kt.addLog("Exit GRPC called");
         responseObserver.onNext(ExitResponse.newBuilder().build());
         responseObserver.onCompleted();
         System.exit(0);
