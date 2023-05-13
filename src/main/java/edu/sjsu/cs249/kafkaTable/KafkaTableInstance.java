@@ -88,11 +88,11 @@ public class KafkaTableInstance {
          *  3) start consuming from the last offset in the snapshot.
          * */
 
-        snapshotOrderingConsumer = createConsumer(SNAPSHOT_ORDERING_TOPIC, 0L, "snapshotOrdering");
         snapshotConsumer = createConsumer(SNAPSHOT_TOPIC, 0L, "snapshot");
-
-        addToSnapshotOrdering();
         grabLatestSnapshot();
+
+        snapshotOrderingConsumer = createConsumer(SNAPSHOT_ORDERING_TOPIC, snapshotOrderingOffset + 1, "snapshotOrdering");
+        addToSnapshotOrdering();
         Thread polling = new Thread(new PollingTopics(this), "polling");
         polling.start();
         server.awaitTermination();
