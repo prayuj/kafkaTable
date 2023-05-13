@@ -329,7 +329,7 @@ public class Main {
             System.out.println(i+1 + "/" + INCREMENTS + " INCREMENTS DONE");
         }
 
-        System.out.println("REQUESTS COMPLETED, VERIFYING GET FOR SERVERS");
+        System.out.println("REQUESTS COMPLETED");
         Thread.sleep(1000);
 
         // do gets to all the replicas to make sure that they applied the puts only applied once
@@ -338,7 +338,7 @@ public class Main {
 
         Thread.sleep(1000);
         if (verifyingSnapshots(servers, channelHashMap, TESTING_KEY, id) == -1) return -1;
-        System.out.println("ALL TESTS PASSED! CHECK SNAPSHOTS FOR SYNC");
+        System.out.println("TEST PASSED!");
         return 0;
     }
 
@@ -374,7 +374,7 @@ public class Main {
                                                     .setCounter(lastClientCounter.incrementAndGet())
                                                     .build()).build());
 
-                            int curr = requestCount.incrementAndGet();
+                            requestCount.incrementAndGet();
                         } catch (Exception e) {
                             System.out.println(e);
                         }
@@ -395,9 +395,9 @@ public class Main {
             String str = scanner.next();
             if (Objects.equals(str, "exit")) {
                 isRunning.set(false);
-                Thread.sleep(1000);
+                Thread.sleep(5000);
                 if (verifyGet(servers, channelHashMap, TESTING_KEY, id, lastClientCounter.incrementAndGet(), requestCount.get()) == -1) return -1;
-                Thread.sleep(1000);
+                Thread.sleep(5000);
                 verifyingSnapshots(servers, channelHashMap, TESTING_KEY, id);
                 break;
             } else if (Objects.equals(str, "status")) {
@@ -426,6 +426,13 @@ public class Main {
                             @Parameters(paramLabel = "grpclear" + "cHost:port", arity = "1..*") String[] servers) throws InterruptedException, InvalidProtocolBufferException {
         String TESTING_KEY = "testing_key";
         int TESTING_INCREMENT = 1;
+
+        HashMap<String, ManagedChannel> channelHashMap = getChannelsAndResetValues(servers, serverIndex, id, TESTING_KEY);
+        var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex]));
+        KafkaTableDebugResponse response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
+        Snapshot snapshot = response.getSnapshot();
+        int lastClientCounter = snapshot.getClientCountersOrDefault(id, -1);
+
         var properties = new Properties();
         properties.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, server);
         properties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
@@ -485,12 +492,6 @@ public class Main {
         System.out.println("SNAPSHOT ORDERING VERIFIED!");
         System.out.println("DOING INC REQUESTS TO MAKE EVERYONE SNAPSHOT!");
 
-        HashMap<String, ManagedChannel> channelHashMap = getChannelsAndResetValues(servers, serverIndex, id, TESTING_KEY);
-        var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex]));
-        KafkaTableDebugResponse response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
-        Snapshot snapshot = response.getSnapshot();
-        int lastClientCounter = snapshot.getClientCountersOrDefault(id, -1);
-
         int numberOfRequests = snapshotCycle * servers.length;
         System.out.println("DOING " + numberOfRequests + " REQUESTS");
         while (numberOfRequests > 0) {
@@ -502,16 +503,68 @@ public class Main {
                                     .setClientid(id)
                                     .setCounter(++lastClientCounter)
                                     .build()).build());
+            System.out.println("lastClientCounter: " + lastClientCounter);
             numberOfRequests--;
             System.out.println(numberOfRequests + " remaining");
         }
-        System.out.println("INC REQUESTS DONE! VERIFY THE SNAPSHOT ORDER:");
+        System.out.println("INC REQUESTS DONE! VERIFYING THE SNAPSHOT ORDER");
         System.out.println(snapshotOrderings.subList((int) offsetToStart, (int) (lastOffset + 1)));
+        Thread.sleep(1000);
+
+        properties.setProperty(ConsumerConfig.GROUP_ID_CONFIG, id + "-snapshot");
+        var consumerSnapshot = new KafkaConsumer<>(properties, new StringDeserializer(), new ByteArrayDeserializer());
+        System.out.println("Starting at " + new Date());
+        AtomicReference<TopicPartition> snapshotPartition = new AtomicReference<>();
+        consumerSnapshot.subscribe(List.of(prefix + "snapshot"), new ConsumerRebalanceListener() {
+            @Override
+            public void onPartitionsRevoked(Collection<TopicPartition> collection) {
+                System.out.println("Didn't expect the revoke!");
+            }
+
+            @Override
+            public void onPartitionsAssigned(Collection<TopicPartition> collection) {
+                System.out.println("Partition assigned");
+                collection.stream().forEach(t -> {
+                    snapshotPartition.set(t);
+                    consumerSnapshot.seek(t, 0);
+                });
+                sem.release();
+            }
+        });
+        System.out.println("first poll count: " + consumerSnapshot.poll(0).count());
+        sem.acquire();
+        System.out.println("Ready to consume at " + new Date());
+        records = consumerSnapshot.poll(Duration.ofSeconds(5));
+        ArrayList<Snapshot> snapshots = new ArrayList<>();
+        int lastSnapshotOffset = 0;
+        for (var record: records) {
+            snapshots.add(Snapshot.parseFrom(record.value()));
+            lastSnapshotOffset = (int) record.offset();
+        }
+
+        i = offsetToStart;
+        consumerSnapshot.seek(snapshotPartition.get(), lastSnapshotOffset - servers.length + 1);
+        consumerSnapshot.poll(Duration.ZERO);
+
+        records = consumerSnapshot.poll(Duration.ofSeconds(5));
+        for(var record: records) {
+            snapshot = Snapshot.parseFrom(record.value());
+            if(!snapshot.getReplicaId().equals(snapshotOrderings.get((int) i).getReplicaId())) {
+                System.out.println("Snapshot at " + record.offset() + " offset does not match snapshot ordering at " + i + " offset");
+                return -1;
+            }
+            i++;
+        }
+
+        if (verifyingSnapshots(servers, channelHashMap, TESTING_KEY, id) == -1) return -1;
+        System.out.println("TEST PASSED!");
+
         return 0;
     }
 
 
     private int verifyGet(String[] servers, HashMap<String, ManagedChannel> channelHashMap, String TESTING_KEY, String id, int lastClientCounter, int expectedValue) {
+        System.out.println("VERIFYING GET");
         for(String server: servers) {
             int value = KafkaTableGrpc.newBlockingStub(channelHashMap.get(server))
                     .get(GetRequest.newBuilder()
