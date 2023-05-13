@@ -32,6 +32,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 @Command
@@ -241,7 +242,7 @@ public class Main {
         int currVal = 0;
         int lastClientCounter;
 
-        HashMap<String, ManagedChannel> channelHashMap = getChannelsAndRest(servers, serverIndex, id, TESTING_KEY);
+        HashMap<String, ManagedChannel> channelHashMap = getChannelsAndResetValues(servers, serverIndex, id, TESTING_KEY);
         var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex]));
         KafkaTableDebugResponse response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
         Snapshot snapshot = response.getSnapshot();
@@ -289,7 +290,7 @@ public class Main {
         int INCREMENTS = 20;
         int lastClientCounter;
 
-        HashMap<String, ManagedChannel> channelHashMap = getChannelsAndRest(servers, serverIndex, id, TESTING_KEY);
+        HashMap<String, ManagedChannel> channelHashMap = getChannelsAndResetValues(servers, serverIndex, id, TESTING_KEY);
         var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex]));
         KafkaTableDebugResponse response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
         Snapshot snapshot = response.getSnapshot();
@@ -350,7 +351,7 @@ public class Main {
         AtomicInteger lastClientCounter = new AtomicInteger();
         AtomicBoolean isRunning = new AtomicBoolean(true);
 
-        HashMap<String, ManagedChannel> channelHashMap = getChannelsAndRest(servers, serverIndex, id, TESTING_KEY);
+        HashMap<String, ManagedChannel> channelHashMap = getChannelsAndResetValues(servers, serverIndex, id, TESTING_KEY);
         var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex]));
         KafkaTableDebugResponse response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
         Snapshot snapshot = response.getSnapshot();
@@ -416,6 +417,99 @@ public class Main {
         return 0;
     }
 
+    @Command
+    int snapshotRecoverTest(@Parameters(paramLabel = "kafkaHost:port") String server,
+                            @Parameters(paramLabel = "clientId") String id,
+                            @Parameters(paramLabel = "prefix") String prefix,
+                            @Parameters(paramLabel = "snapshot cycle value") int snapshotCycle,
+                            @Parameters(paramLabel = "init index to debug") int serverIndex,
+                            @Parameters(paramLabel = "grpclear" + "cHost:port", arity = "1..*") String[] servers) throws InterruptedException, InvalidProtocolBufferException {
+        String TESTING_KEY = "testing_key";
+        int TESTING_INCREMENT = 1;
+        var properties = new Properties();
+        properties.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, server);
+        properties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        properties.setProperty(ConsumerConfig.GROUP_ID_CONFIG, id + "-snapshotOrdering");
+        properties.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+        properties.setProperty(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, "10000");
+        var consumerSnapshotOrdering = new KafkaConsumer<>(properties, new StringDeserializer(), new ByteArrayDeserializer());
+        System.out.println("Starting at " + new Date());
+        var sem = new Semaphore(0);
+        AtomicReference<TopicPartition> snapshotOrderingPartition = new AtomicReference<>();
+        consumerSnapshotOrdering.subscribe(List.of(prefix + "snapshotOrdering"), new ConsumerRebalanceListener() {
+            @Override
+            public void onPartitionsRevoked(Collection<TopicPartition> collection) {
+                System.out.println("Didn't expect the revoke!");
+            }
+
+            @Override
+            public void onPartitionsAssigned(Collection<TopicPartition> collection) {
+                System.out.println("Partition assigned");
+                collection.stream().forEach(t -> {
+                    snapshotOrderingPartition.set(t);
+                    consumerSnapshotOrdering.seek(t, 0);
+                });
+                sem.release();
+            }
+        });
+        System.out.println("first poll count: " + consumerSnapshotOrdering.poll(0).count());
+        sem.acquire();
+        System.out.println("Ready to consume at " + new Date());
+        var records = consumerSnapshotOrdering.poll(Duration.ofSeconds(5));
+        ArrayList<SnapshotOrdering> snapshotOrderings = new ArrayList<>();
+        long lastOffset = -1;
+        for(var record: records) {
+            SnapshotOrdering snapshotOrdering = SnapshotOrdering.parseFrom(record.value());
+            snapshotOrderings.add(snapshotOrdering);
+            lastOffset = record.offset();
+        }
+        System.out.println("STOP AND RESTART REPLICAS! Press any key to continue...");
+        Scanner scanner = new Scanner(System.in);
+        scanner.next();
+
+        long offsetToStart = lastOffset - servers.length + 1;
+        consumerSnapshotOrdering.seek(snapshotOrderingPartition.get(), offsetToStart);
+        consumerSnapshotOrdering.poll(Duration.ZERO);
+
+        records = consumerSnapshotOrdering.poll(Duration.ofSeconds(5));
+        long i = offsetToStart;
+        for(var record: records) {
+            SnapshotOrdering snapshotOrdering = SnapshotOrdering.parseFrom(record.value());
+            if(!snapshotOrderings.get((int) i).getReplicaId().equals(snapshotOrdering.getReplicaId())) {
+                System.out.println("Order does not match at " + i + " index");
+                return -1;
+            }
+            i++;
+        }
+
+        System.out.println("SNAPSHOT ORDERING VERIFIED!");
+        System.out.println("DOING INC REQUESTS TO MAKE EVERYONE SNAPSHOT!");
+
+        HashMap<String, ManagedChannel> channelHashMap = getChannelsAndResetValues(servers, serverIndex, id, TESTING_KEY);
+        var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex]));
+        KafkaTableDebugResponse response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
+        Snapshot snapshot = response.getSnapshot();
+        int lastClientCounter = snapshot.getClientCountersOrDefault(id, -1);
+
+        int numberOfRequests = snapshotCycle * servers.length;
+        System.out.println("DOING " + numberOfRequests + " REQUESTS");
+        while (numberOfRequests > 0) {
+            KafkaTableGrpc.newBlockingStub(channelHashMap.get(servers[numberOfRequests%servers.length]))
+                    .inc(IncRequest.newBuilder()
+                            .setKey(TESTING_KEY)
+                            .setIncValue(TESTING_INCREMENT)
+                            .setXid(ClientXid.newBuilder()
+                                    .setClientid(id)
+                                    .setCounter(++lastClientCounter)
+                                    .build()).build());
+            numberOfRequests--;
+            System.out.println(numberOfRequests + " remaining");
+        }
+        System.out.println("INC REQUESTS DONE! VERIFY THE SNAPSHOT ORDER:");
+        System.out.println(snapshotOrderings.subList((int) offsetToStart, (int) (lastOffset + 1)));
+        return 0;
+    }
+
 
     private int verifyGet(String[] servers, HashMap<String, ManagedChannel> channelHashMap, String TESTING_KEY, String id, int lastClientCounter, int expectedValue) {
         for(String server: servers) {
@@ -463,7 +557,7 @@ public class Main {
         System.out.println("SNAPSHOTS VERIFIED");
         return 1;
     }
-    private HashMap<String, ManagedChannel> getChannelsAndRest(String[] servers, int serverIndex, String id, String TESTING_KEY) throws InterruptedException {
+    private HashMap<String, ManagedChannel> getChannelsAndResetValues(String[] servers, int serverIndex, String id, String TESTING_KEY) throws InterruptedException {
         HashMap<String, ManagedChannel> channelHashMap = new HashMap<>();
         for(String server: servers) {
             var lastColon = server.lastIndexOf(':');
