@@ -166,6 +166,7 @@ public class KafkaTableInstance {
             try {
                 SnapshotOrdering message = SnapshotOrdering.parseFrom(record.value());
                 snapshotOrderingOffset = record.offset();
+                System.out.println("snapshotOrderingOffset: " + snapshotOrderingOffset);
                 addLog("Current name pulled: " + message.getReplicaId());
                 if (message.getReplicaId().equals(this.name)) {
                     addLog("Time to publish snapshot");
@@ -265,18 +266,17 @@ class PollingTopics extends Thread {
 
                                 if (!kt.isValidRequest(incRequest.getXid().getClientid(), incRequest.getXid().getCounter())) {
                                     kt.addLog("Duplicate inc publish message, ...ignoring");
-                                    continue;
-                                }
+                                } else {
+                                    String key = incRequest.getKey();
+                                    int incValue = incRequest.getIncValue();
 
-                                String key = incRequest.getKey();
-                                int incValue = incRequest.getIncValue();
+                                    kt.clientCounters.put(incRequest.getXid().getClientid(), incRequest.getXid().getCounter());
 
-                                kt.clientCounters.put(incRequest.getXid().getClientid(), incRequest.getXid().getCounter());
-
-                                if (kt.hashtable.get(key) != null && kt.hashtable.get(key) + incValue >= 0) {
-                                    kt.hashtable.put(key, kt.hashtable.get(key) + incValue);
-                                } else if (incValue >= 0) {
-                                    kt.hashtable.put(key, incValue);
+                                    if (kt.hashtable.get(key) != null && kt.hashtable.get(key) + incValue >= 0) {
+                                        kt.hashtable.put(key, kt.hashtable.get(key) + incValue);
+                                    } else if (incValue >= 0) {
+                                        kt.hashtable.put(key, incValue);
+                                    }
                                 }
                             } else {
                                 GetRequest getRequest = message.getGet();
@@ -289,16 +289,15 @@ class PollingTopics extends Thread {
                                         responseObserver.onNext(GetResponse.newBuilder().build());
                                         responseObserver.onCompleted();
                                     }
-                                    continue;
-                                }
-
-                                kt.clientCounters.put(getRequest.getXid().getClientid(), getRequest.getXid().getCounter());
-                                if (kt.pendingGetRequests.containsKey(getRequest.getXid())) {
-                                    String key = getRequest.getKey();
-                                    StreamObserver<GetResponse> responseObserver = kt.pendingGetRequests.get(getRequest.getXid());
-                                    int value = kt.hashtable.get(key) != null ? kt.hashtable.get(key) : 0;
-                                    responseObserver.onNext(GetResponse.newBuilder().setValue(value).build());
-                                    responseObserver.onCompleted();
+                                } else {
+                                    kt.clientCounters.put(getRequest.getXid().getClientid(), getRequest.getXid().getCounter());
+                                    if (kt.pendingGetRequests.containsKey(getRequest.getXid())) {
+                                        String key = getRequest.getKey();
+                                        StreamObserver<GetResponse> responseObserver = kt.pendingGetRequests.get(getRequest.getXid());
+                                        int value = kt.hashtable.get(key) != null ? kt.hashtable.get(key) : 0;
+                                        responseObserver.onNext(GetResponse.newBuilder().setValue(value).build());
+                                        responseObserver.onCompleted();
+                                    }
                                 }
                             }
                             if (offset % kt.snapshotCycle == 0) {
