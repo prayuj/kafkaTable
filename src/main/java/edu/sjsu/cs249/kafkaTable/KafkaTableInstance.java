@@ -165,6 +165,10 @@ public class KafkaTableInstance {
             addLog("Polling Snapshot Ordering");
             try {
                 SnapshotOrdering message = SnapshotOrdering.parseFrom(record.value());
+                if (record.offset() <= snapshotOrderingOffset) {
+                    addLog("operations offset is lower than what I have processed; offset: " + record.offset() + ", last processed offset: " + snapshotOrderingOffset);
+                    continue;
+                }
                 snapshotOrderingOffset = record.offset();
                 System.out.println("snapshotOrderingOffset: " + snapshotOrderingOffset);
                 addLog("Current name pulled: " + message.getReplicaId());
@@ -180,6 +184,7 @@ public class KafkaTableInstance {
                     publishToTopic(SNAPSHOT_TOPIC, bytes);
                     publishToTopic(SNAPSHOT_ORDERING_TOPIC,
                             SnapshotOrdering.newBuilder().setReplicaId(name).build().toByteArray());
+                    System.out.println("Published the following snapshot: " + Snapshot.parseFrom(bytes));
                 }
             } catch (InvalidProtocolBufferException e) {
                 addLog("Unable to parse value: " + e);
@@ -201,7 +206,7 @@ public class KafkaTableInstance {
         consumer.subscribe(List.of(topic), new ConsumerRebalanceListener() {
             @Override
             public void onPartitionsRevoked(Collection<TopicPartition> collection) {
-                addLog("Didn't expect the revoke!");
+                addLog("Didn't expect the revoke for : " + collection);
             }
 
             @Override
@@ -249,6 +254,10 @@ class PollingTopics extends Thread {
                         kt.addLog(record.timestampType());
                         long offset = record.offset();
                         kt.addLog(offset);
+                        if (offset <= kt.operationsOffset) {
+                            kt.addLog("operations offset is lower than what I have processed; offset: " + offset + ", last processed offset: " + kt.operationsOffset);
+                            continue;
+                        };
                         kt.operationsOffset = offset;
                         PublishedItem message = null;
                         try {
