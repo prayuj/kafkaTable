@@ -27,9 +27,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -556,6 +554,7 @@ public class Main {
             i++;
         }
 
+        Thread.sleep(1000);
         if (verifyingSnapshots(servers, channelHashMap, TESTING_KEY, id) == -1) return -1;
         System.out.println("TEST PASSED!");
 
@@ -563,10 +562,86 @@ public class Main {
     }
 
 
+    @Command
+    int blastTest(  @Parameters(paramLabel = "clientId") String id,
+                  @Parameters(paramLabel = "init index to debug") int serverIndex,
+                  @Parameters(paramLabel = "grpclear" + "cHost:port", arity = "1..*") String[] servers) throws InterruptedException {
+        Thread t = new Thread(() -> {
+            String TESTING_KEY = "testing_key";
+            int TESTING_INCREMENT = 1;
+            int lastClientCounter;
+            int valCount = 0;
+            HashMap<String, ManagedChannel> channelHashMap = null;
+            try {
+                channelHashMap = getChannelsAndResetValues(servers, serverIndex, id, TESTING_KEY);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex]));
+            KafkaTableDebugResponse response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
+            Snapshot snapshot = response.getSnapshot();
+            lastClientCounter = snapshot.getClientCountersOrDefault(id, -1);
+
+            while (true) {
+                // Unique Requests
+                for (int i = 0; i < 5; i++) {
+                    for (String server : servers) {
+                        var incStub = KafkaTableGrpc.newBlockingStub(channelHashMap.get(server));
+                        incStub.inc(IncRequest.newBuilder()
+                                .setIncValue(TESTING_INCREMENT)
+                                .setKey(TESTING_KEY)
+                                .setXid(ClientXid.newBuilder()
+                                        .setClientid(id)
+                                        .setCounter(++lastClientCounter).build()).build());
+                        valCount++;
+                        System.out.println("REQUESTS DONE; CURR VAL: " + valCount);
+                    }
+                }
+
+                for (int i = 0; i < 5; i++) {
+                    ClientXid clientXid = ClientXid.newBuilder()
+                            .setClientid(id)
+                            .setCounter(++lastClientCounter).build();
+                    for (String server : servers) {
+                        var incStub = KafkaTableGrpc.newBlockingStub(channelHashMap.get(server));
+                        incStub.inc(IncRequest.newBuilder()
+                                .setIncValue(TESTING_INCREMENT)
+                                .setKey(TESTING_KEY)
+                                .setXid(clientXid).build());
+                        System.out.println("CONCURRENT REQUESTS SENT");
+                    }
+                    valCount++;
+                    System.out.println("CONCURRENT REQUESTS DONE; CURR VAL: " + valCount);
+                }
+
+                try {
+                    Thread.sleep(1000);
+                    if (verifyGet(servers, channelHashMap, TESTING_KEY, id, lastClientCounter, valCount) == -1) return;
+
+                    Thread.sleep(1000);
+                    response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
+                    snapshot = response.getSnapshot();
+                    lastClientCounter = snapshot.getClientCountersOrDefault(id, -1);
+
+                    if (verifyingSnapshots(servers, channelHashMap, TESTING_KEY, id) == -1) return;
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+
+            }
+        });
+        t.start();
+
+        Scanner scanner = new Scanner(System.in);
+        scanner.next();
+
+        return 0;
+    }
+
     private int verifyGet(String[] servers, HashMap<String, ManagedChannel> channelHashMap, String TESTING_KEY, String id, int lastClientCounter, int expectedValue) {
         System.out.println("VERIFYING GET");
         for(String server: servers) {
-            int value = KafkaTableGrpc.newBlockingStub(channelHashMap.get(server))
+            int value = KafkaTableGrpc.newBlockingStub(channelHashMap.get(server)).withDeadlineAfter(15L, TimeUnit.SECONDS)
                     .get(GetRequest.newBuilder()
                             .setKey(TESTING_KEY)
                             .setXid(ClientXid.newBuilder()
@@ -584,26 +659,26 @@ public class Main {
     private int verifyingSnapshots(String[] servers, HashMap<String, ManagedChannel>  channelHashMap, String TESTING_KEY, String id) {
         ArrayList<Snapshot> snapshots = new ArrayList<>();
         for(String debugReqServer: servers) {
-            Snapshot currSnapShot = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(debugReqServer))
+            Snapshot currSnapShot = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(debugReqServer)).withDeadlineAfter(15L, TimeUnit.SECONDS)
                     .debug(KafkaTableDebugRequest.newBuilder().build()).getSnapshot();
             snapshots.add(currSnapShot);
         }
         System.out.println("VERIFYING SNAPSHOTS");
         for (int i = 1; i< snapshots.size(); i++) {
             if(snapshots.get(i).getOperationsOffset() != snapshots.get(i - 1).getOperationsOffset()) {
-                System.out.println("snapshots operations offsets don't match");
+                System.out.println("snapshots operations offsets don't match. " + servers[i-1] + " had this value: " + snapshots.get(i - 1).getOperationsOffset() + " and " + servers[i] + " had this: " + snapshots.get(i).getOperationsOffset());
                 return -1;
             }
             if(snapshots.get(i).getSnapshotOrderingOffset() != snapshots.get(i - 1).getSnapshotOrderingOffset()) {
-                System.out.println("snapshots snapshot-ordering offsets don't match");
+                System.out.println("snapshots snapshot-ordering offsets don't match. " + servers[i-1] + " had this value: " + snapshots.get(i - 1).getSnapshotOrderingOffset() + " and " + servers[i] + " had this: " + snapshots.get(i).getSnapshotOrderingOffset());
                 return -1;
             }
             if(!Objects.equals(snapshots.get(i).getTableMap().get(TESTING_KEY), snapshots.get(i - 1).getTableMap().get(TESTING_KEY))) {
-                System.out.println("snapshots key-value pair don't match");
+                System.out.println("snapshots key-value pair don't match. " + servers[i-1] + " had this value: " + snapshots.get(i - 1).getTableMap().get(TESTING_KEY) + " and " + servers[i] + " had this: " + snapshots.get(i).getTableMap().get(TESTING_KEY));
                 return -1;
             }
             if(!Objects.equals(snapshots.get(i).getClientCountersMap().get(id), snapshots.get(i - 1).getClientCountersMap().get(id))) {
-                System.out.println("snapshots client counters don't match");
+                System.out.println("snapshots client counters don't match. " + servers[i-1] + " had this value: " + snapshots.get(i - 1).getClientCountersMap().get(id) + " and " + servers[i] + " had this: " + snapshots.get(i).getClientCountersMap().get(id));
                 return -1;
             }
         }
