@@ -159,14 +159,14 @@ public class KafkaTableInstance {
          *  (hmm, we have a consumer offset synchronization problem that we should discuss in class.)
          * */
         snapshotOrderingConsumer.seek(new TopicPartition(SNAPSHOT_ORDERING_TOPIC, 0), snapshotOrderingOffset + 1);
-        snapshotOrderingConsumer.poll(Duration.ZERO);
-        var records = snapshotOrderingConsumer.poll(Duration.ofSeconds(1));
+        var records = snapshotOrderingConsumer.poll(Duration.ZERO);
+        if (records.isEmpty()) records = snapshotOrderingConsumer.poll(Duration.ofSeconds(1));
         for (var record: records) {
             addLog("Polling Snapshot Ordering");
             try {
                 SnapshotOrdering message = SnapshotOrdering.parseFrom(record.value());
                 if (record.offset() <= snapshotOrderingOffset) {
-                    addLog("operations offset is lower than what I have processed; offset: " + record.offset() + ", last processed offset: " + snapshotOrderingOffset);
+                    addLog("snapshotOrderingOffset is lower than what I have processed; offset: " + record.offset() + ", last processed offset: " + snapshotOrderingOffset);
                     continue;
                 }
                 snapshotOrderingOffset = record.offset();
