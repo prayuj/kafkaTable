@@ -242,12 +242,12 @@ class PollingTopics extends Thread {
             throw new RuntimeException(e);
         }
         while (true) {
-            synchronized (kt) {
-                try {
-                    kt.operationsSemaphore.acquire();
-                    kt.addLog("Polling");
-                    var records = kt.operationsConsumer.poll(Duration.ofSeconds(1));
-                    for (var record : records) {
+            try {
+                kt.operationsSemaphore.acquire();
+                kt.addLog("Polling");
+                var records = kt.operationsConsumer.poll(Duration.ofSeconds(1));
+                for (var record : records) {
+                    synchronized (kt) {
                         kt.addLog("Received message!");
                         kt.addLog(record.headers());
                         kt.addLog(record.timestamp());
@@ -281,21 +281,35 @@ class PollingTopics extends Thread {
 
                                     kt.clientCounters.put(incRequest.getXid().getClientid(), incRequest.getXid().getCounter());
 
-                                    if (kt.hashtable.get(key) != null && kt.hashtable.get(key) + incValue >= 0) {
-                                        kt.hashtable.put(key, kt.hashtable.get(key) + incValue);
+                                    kt.addLog("Current value of " + key + " is " + kt.hashtable.get(key));
+                                    if (kt.hashtable.get(key) != null) {
+                                        int result = kt.hashtable.get(key) + incValue;
+                                        kt.addLog(kt.hashtable.get(key) +" + " + incValue + " = " + (kt.hashtable.get(key) + incValue));
+                                        kt.addLog(kt.hashtable.get(key) +" + " + incValue + " = " + result);
+                                        kt.addLog(kt.hashtable.get(key) +" + " + incValue + " >= 0: " + (kt.hashtable.get(key) + incValue >= 0));
+                                    }
+                                    if (kt.hashtable.get(key) != null) {
+                                        if (kt.hashtable.get(key) + incValue >= 0) {
+                                            kt.addLog("Cond 1");
+                                            kt.hashtable.put(key, kt.hashtable.get(key) + incValue);
+                                        }
                                     } else if (incValue >= 0) {
+                                        kt.addLog("Cond 2");
                                         kt.hashtable.put(key, incValue);
                                     }
+                                    kt.addLog("Current value of " + key + " is " + kt.hashtable.get(key));
                                 }
                             } else {
                                 GetRequest getRequest = message.getGet();
 
                                 if (!kt.isValidRequest(getRequest.getXid().getClientid(), getRequest.getXid().getCounter())) {
                                     kt.addLog("Duplicate get publish message, ...ignoring");
-
                                     if (kt.pendingGetRequests.containsKey(getRequest.getXid())) {
+                                        String key = getRequest.getKey();
                                         StreamObserver<GetResponse> responseObserver = kt.pendingGetRequests.get(getRequest.getXid());
-                                        responseObserver.onNext(GetResponse.newBuilder().build());
+                                        int value = kt.hashtable.get(key) != null ? kt.hashtable.get(key) : 0;
+                                        kt.addLog("return value of " + value + " for " + key);
+                                        responseObserver.onNext(GetResponse.newBuilder().setValue(value).build());
                                         responseObserver.onCompleted();
                                     }
                                 } else {
@@ -304,6 +318,7 @@ class PollingTopics extends Thread {
                                         String key = getRequest.getKey();
                                         StreamObserver<GetResponse> responseObserver = kt.pendingGetRequests.get(getRequest.getXid());
                                         int value = kt.hashtable.get(key) != null ? kt.hashtable.get(key) : 0;
+                                        kt.addLog("return value of " + value + " for " + key);
                                         responseObserver.onNext(GetResponse.newBuilder().setValue(value).build());
                                         responseObserver.onCompleted();
                                     }
@@ -318,18 +333,14 @@ class PollingTopics extends Thread {
                         } catch (Exception e) {
                             kt.addLog("Exception in message parsing block" + e);
                         }
-
                     }
-                    kt.operationsSemaphore.release();
-                    kt.addLog("Released semaphore");
-                } catch (InterruptedException e) {
-                    kt.addLog("Problem acquiring semaphore");
+
                 }
-            }
-            try {
-                Thread.sleep(500);
+                kt.operationsSemaphore.release();
+                kt.addLog("Released semaphore");
+                Thread.sleep(100);
             } catch (InterruptedException e) {
-                throw new RuntimeException(e);
+                kt.addLog("Problem acquiring semaphore");
             }
         }
     }
@@ -344,6 +355,7 @@ class KafkaTableGrpcService extends KafkaTableGrpc.KafkaTableImplBase {
     public void inc(IncRequest request, StreamObserver<IncResponse> responseObserver) {
         synchronized (kt) {
             kt.addLog("Inc GRPC called");
+            kt.addLog(request.getAllFields());
             // If the request has already been seen ignore it
             if(!kt.isValidRequest(request.getXid().getClientid(), request.getXid().getCounter())){
                 kt.addLog("Duplicate Request, ...ignoring");
@@ -365,8 +377,10 @@ class KafkaTableGrpcService extends KafkaTableGrpc.KafkaTableImplBase {
             kt.addLog("Get GRPC called");
             // If the request has already been seen ignore it
             if (!kt.isValidRequest(request.getXid().getClientid(), request.getXid().getCounter())) {
+                String key = request.getKey();
+                int value = kt.hashtable.get(key) != null ? kt.hashtable.get(key) : 0;
                 kt.addLog("Duplicate Request, ...ignoring");
-                responseObserver.onNext(GetResponse.newBuilder().build());
+                responseObserver.onNext(GetResponse.newBuilder().setValue(value).build());
                 responseObserver.onCompleted();
                 return;
             }

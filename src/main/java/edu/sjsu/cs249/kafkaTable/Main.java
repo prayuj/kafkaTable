@@ -250,7 +250,7 @@ public class Main {
             System.out.println("INC REQUESTS FOR " + server);
             // do 20 puts to a replica
             for (int i = 0; i < INCREMENTS; i++) {
-                KafkaTableGrpc.newBlockingStub(channelHashMap.get(server))
+                KafkaTableGrpc.newBlockingStub(channelHashMap.get(server)).withDeadlineAfter(15L, TimeUnit.SECONDS)
                         .inc(IncRequest.newBuilder()
                                 .setKey(TESTING_KEY)
                                 .setIncValue(TESTING_INCREMENT)
@@ -289,7 +289,7 @@ public class Main {
         int lastClientCounter;
 
         HashMap<String, ManagedChannel> channelHashMap = getChannelsAndResetValues(servers, serverIndex, id, TESTING_KEY);
-        var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex]));
+        var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex])).withDeadlineAfter(15L, TimeUnit.SECONDS);
         KafkaTableDebugResponse response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
         Snapshot snapshot = response.getSnapshot();
         lastClientCounter = snapshot.getClientCountersOrDefault(id, -1);
@@ -350,7 +350,7 @@ public class Main {
         AtomicBoolean isRunning = new AtomicBoolean(true);
 
         HashMap<String, ManagedChannel> channelHashMap = getChannelsAndResetValues(servers, serverIndex, id, TESTING_KEY);
-        var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex]));
+        var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex])).withDeadlineAfter(15L, TimeUnit.SECONDS);
         KafkaTableDebugResponse response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
         Snapshot snapshot = response.getSnapshot();
         lastClientCounter.set(snapshot.getClientCountersOrDefault(id, -1));
@@ -363,7 +363,7 @@ public class Main {
                 for(String server: servers) {
                     if (isRunning.get()) {
                         try {
-                            KafkaTableGrpc.newBlockingStub(channelHashMap.get(server))
+                            KafkaTableGrpc.newBlockingStub(channelHashMap.get(server)).withDeadlineAfter(15L, TimeUnit.SECONDS)
                                     .inc(IncRequest.newBuilder()
                                             .setKey(TESTING_KEY)
                                             .setIncValue(TESTING_INCREMENT)
@@ -402,7 +402,7 @@ public class Main {
                 System.out.println(requestCount.get() + " REQUESTS DONE");
             } else if (str.matches("172\\.27\\.24\\.[0-9]+:[0-9]+")) {
                 try {
-                    KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(str))
+                    KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(str)).withDeadlineAfter(15L, TimeUnit.SECONDS)
                             .exit(ExitRequest.newBuilder().build());
                     System.out.println(str + " EXITED");
                 } catch (Exception e) {
@@ -426,7 +426,7 @@ public class Main {
         int TESTING_INCREMENT = 1;
 
         HashMap<String, ManagedChannel> channelHashMap = getChannelsAndResetValues(servers, serverIndex, id, TESTING_KEY);
-        var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex]));
+        var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex])).withDeadlineAfter(15L, TimeUnit.SECONDS);
         KafkaTableDebugResponse response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
         Snapshot snapshot = response.getSnapshot();
         int lastClientCounter = snapshot.getClientCountersOrDefault(id, -1);
@@ -493,7 +493,7 @@ public class Main {
         int numberOfRequests = snapshotCycle * servers.length;
         System.out.println("DOING " + numberOfRequests + " REQUESTS");
         while (numberOfRequests > 0) {
-            KafkaTableGrpc.newBlockingStub(channelHashMap.get(servers[numberOfRequests%servers.length]))
+            KafkaTableGrpc.newBlockingStub(channelHashMap.get(servers[numberOfRequests%servers.length])).withDeadlineAfter(15L, TimeUnit.SECONDS)
                     .inc(IncRequest.newBuilder()
                             .setKey(TESTING_KEY)
                             .setIncValue(TESTING_INCREMENT)
@@ -577,7 +577,7 @@ public class Main {
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
-            var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex]));
+            var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex])).withDeadlineAfter(15L, TimeUnit.SECONDS);
             KafkaTableDebugResponse response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
             Snapshot snapshot = response.getSnapshot();
             lastClientCounter = snapshot.getClientCountersOrDefault(id, -1);
@@ -586,7 +586,7 @@ public class Main {
                 // Unique Requests
                 for (int i = 0; i < 5; i++) {
                     for (String server : servers) {
-                        var incStub = KafkaTableGrpc.newBlockingStub(channelHashMap.get(server));
+                        var incStub = KafkaTableGrpc.newBlockingStub(channelHashMap.get(server)).withDeadlineAfter(15L, TimeUnit.SECONDS);
                         incStub.inc(IncRequest.newBuilder()
                                 .setIncValue(TESTING_INCREMENT)
                                 .setKey(TESTING_KEY)
@@ -603,7 +603,7 @@ public class Main {
                             .setClientid(id)
                             .setCounter(++lastClientCounter).build();
                     for (String server : servers) {
-                        var incStub = KafkaTableGrpc.newBlockingStub(channelHashMap.get(server));
+                        var incStub = KafkaTableGrpc.newBlockingStub(channelHashMap.get(server)).withDeadlineAfter(15L, TimeUnit.SECONDS);
                         incStub.inc(IncRequest.newBuilder()
                                 .setIncValue(TESTING_INCREMENT)
                                 .setKey(TESTING_KEY)
@@ -696,14 +696,14 @@ public class Main {
         }
 
         System.out.println("Getting snapshot values from " + servers[serverIndex]);
-        var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex]));
+        var stub = KafkaTableDebugGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex])).withDeadlineAfter(15L, TimeUnit.SECONDS);
         KafkaTableDebugResponse response = stub.debug(KafkaTableDebugRequest.newBuilder().build());
         Snapshot snapshot = response.getSnapshot();
         int lastClientCounter = snapshot.getClientCountersOrDefault(id, -1);
 
         if (snapshot.getTableMap().containsKey(TESTING_KEY) && snapshot.getTableMap().get(TESTING_KEY) > 0) {
             System.out.println("RESETTING " + TESTING_KEY);
-            KafkaTableGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex]))
+            KafkaTableGrpc.newBlockingStub(channelHashMap.get(servers[serverIndex])).withDeadlineAfter(15L, TimeUnit.SECONDS)
                     .inc(IncRequest.newBuilder()
                             .setKey(TESTING_KEY)
                             .setIncValue(-snapshot.getTableMap().get(TESTING_KEY))
